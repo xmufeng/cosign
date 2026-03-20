@@ -32,6 +32,8 @@ import (
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	"github.com/sigstore/sigstore/pkg/signature"
 	signatureoptions "github.com/sigstore/sigstore/pkg/signature/options"
+	"github.com/tjfoc/gmsm/sm2"
+	gmx509 "github.com/tjfoc/gmsm/x509"
 )
 
 // SignerVerifierKeypair is a wrapper around a SignerVerifier that implements
@@ -49,12 +51,6 @@ func NewSignerVerifierKeypair(sv signature.SignerVerifier, defaultLoadOptions *[
 	if err != nil {
 		return nil, fmt.Errorf("getting public key: %w", err)
 	}
-	pubKeyBytes, err := x509.MarshalPKIXPublicKey(pubKey)
-	if err != nil {
-		return nil, fmt.Errorf("marshalling public key: %w", err)
-	}
-	hashedBytes := sha256.Sum256(pubKeyBytes)
-	hint := []byte(base64.StdEncoding.EncodeToString(hashedBytes[:]))
 
 	var keyAlg string
 	switch pubKey.(type) {
@@ -64,9 +60,18 @@ func NewSignerVerifierKeypair(sv signature.SignerVerifier, defaultLoadOptions *[
 		keyAlg = "RSA"
 	case ed25519.PublicKey:
 		keyAlg = "ED25519"
+	case *sm2.PublicKey:
+		return NewSM2SignerVerifierKeypair(pubKey, sv, defaultLoadOptions)
 	default:
 		return nil, errors.New("unsupported key type")
 	}
+
+	pubKeyBytes, err := x509.MarshalPKIXPublicKey(pubKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling public key: %w", err)
+	}
+	hashedBytes := sha256.Sum256(pubKeyBytes)
+	hint := []byte(base64.StdEncoding.EncodeToString(hashedBytes[:]))
 
 	algo, err := signature.GetDefaultAlgorithmDetails(pubKey, *cosign.GetDefaultLoadOptions(defaultLoadOptions)...)
 	if err != nil {
@@ -77,6 +82,28 @@ func NewSignerVerifierKeypair(sv signature.SignerVerifier, defaultLoadOptions *[
 		sv:     sv,
 		hint:   hint,
 		keyAlg: keyAlg,
+		sigAlg: algo,
+	}, nil
+}
+
+func NewSM2SignerVerifierKeypair(pubKey crypto.PublicKey, sv signature.SignerVerifier, defaultLoadOptions *[]signature.LoadOption) (*SignerVerifierKeypair, error) {
+	// Use gmx509.MarshalPKIXPublicKey for SM2 keys
+	pubKeyBytes, err := gmx509.MarshalPKIXPublicKey(pubKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling SM2 public key: %w", err)
+	}
+	hashedBytes := sha256.Sum256(pubKeyBytes)
+	hint := []byte(base64.StdEncoding.EncodeToString(hashedBytes[:]))
+
+	algo, err := signature.GetAlgorithmDetails(protocommon.PublicKeyDetails_PKIX_ECDSA_P256_SHA_256)
+	if err != nil {
+		return nil, fmt.Errorf("getting default algorithm details for SM2: %w", err)
+	}
+
+	return &SignerVerifierKeypair{
+		sv:     sv,
+		hint:   hint,
+		keyAlg: "SM2",
 		sigAlg: algo,
 	}, nil
 }
@@ -116,6 +143,15 @@ func (k *SignerVerifierKeypair) GetPublicKeyPem() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if k.keyAlg == "SM2" {
+		// SM2 keys need to be marshalled with gmx509
+		pubKeyBytes, err := gmx509.MarshalSm2PublicKey(pubKey.(*sm2.PublicKey))
+		if err != nil {
+			return "", err
+		}
+		return string(pubKeyBytes), nil
+	}
+
 	pemBytes, err := cryptoutils.MarshalPublicKeyToPEM(pubKey)
 	if err != nil {
 		return "", err

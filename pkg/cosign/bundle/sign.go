@@ -36,6 +36,10 @@ type SignOptions struct {
 
 func SignData(ctx context.Context, content sign.Content, keypair sign.Keypair, idToken string, cert []byte, signingConfig *root.SigningConfig, trustedMaterial root.TrustedMaterial, opts SignOptions) ([]byte, error) {
 	var bundleOpts sign.BundleOptions
+	// Check if it's an SM2 keypair.
+	if keypair.GetKeyAlgorithm() == "SM2" {
+		return SignSM2Data(ctx, content, keypair, opts)
+	}
 
 	if trustedMaterial != nil {
 		bundleOpts.TrustedRoot = trustedMaterial
@@ -138,6 +142,18 @@ func SignData(ctx context.Context, content sign.Content, keypair sign.Keypair, i
 	defer spinner.Stop()
 
 	bundle, err := sign.Bundle(content, keypair, bundleOpts)
+
+	if err != nil {
+		return nil, fmt.Errorf("error signing bundle: %w", err)
+	}
+	return protojson.Marshal(bundle)
+}
+
+func SignSM2Data(ctx context.Context, content sign.Content, keypair sign.Keypair, opts SignOptions) ([]byte, error) {
+	spinner := ui.NewSpinner(ctx, "Signing artifact...")
+	defer spinner.Stop()
+
+	bundle, err := sign.Bundle(content, keypair, sign.BundleOptions{})
 
 	if err != nil {
 		return nil, fmt.Errorf("error signing bundle: %w", err)

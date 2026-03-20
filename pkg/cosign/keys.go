@@ -37,6 +37,8 @@ import (
 	"github.com/sigstore/sigstore/pkg/cryptoutils/goodkey"
 	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/sigstore/sigstore/pkg/signature/options"
+	"github.com/tjfoc/gmsm/sm2"
+	gmx509 "github.com/tjfoc/gmsm/x509"
 )
 
 const (
@@ -47,7 +49,8 @@ const (
 	// PEM-encoded ECDSA private key
 	ECPrivateKeyPemType = "EC PRIVATE KEY"
 	// PEM-encoded PKCS #8 RSA, ECDSA or ED25519 private key
-	PrivateKeyPemType   = "PRIVATE KEY"
+	PrivateKeyPemType = "PRIVATE KEY"
+
 	BundleKey           = static.BundleAnnotationKey
 	RFC3161TimestampKey = static.RFC3161TimestampAnnotationKey
 )
@@ -166,6 +169,15 @@ func ImportKeyPair(keyPath string, pf PassFunc) (*KeysBytes, error) {
 			return nil, fmt.Errorf("error validating ecdsa key: %w", err)
 		}
 		pk = ecdsaPk
+	case SM2PrivateKeyPemType:
+		sm2Pk, err := ParseSM2PrivateKey(p.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing sm2 private key: %w", err)
+		}
+		if err = goodkey.ValidatePubKey(sm2Pk.Public()); err != nil {
+			return nil, fmt.Errorf("error validating sm2 key: %w", err)
+		}
+		pk = sm2Pk
 	case PrivateKeyPemType:
 		pkcs8Pk, err := x509.ParsePKCS8PrivateKey(p.Bytes)
 		if err != nil {
@@ -197,9 +209,19 @@ func ImportKeyPair(keyPath string, pf PassFunc) (*KeysBytes, error) {
 }
 
 func marshalKeyPair(ptype string, keypair Keys, pf PassFunc) (key *KeysBytes, err error) {
-	x509Encoded, err := x509.MarshalPKCS8PrivateKey(keypair.private)
-	if err != nil {
-		return nil, fmt.Errorf("x509 encoding private key: %w", err)
+	var x509Encoded []byte
+
+	// Handle SM2 keys specially
+	if sm2Key, ok := keypair.private.(*sm2.PrivateKey); ok && ptype == SM2PrivateKeyPemType {
+		x509Encoded, err = MarshalSM2PrivateKey(sm2Key)
+		if err != nil {
+			return nil, fmt.Errorf("SM2 encoding private key: %w", err)
+		}
+	} else {
+		x509Encoded, err = x509.MarshalPKCS8PrivateKey(keypair.private)
+		if err != nil {
+			return nil, fmt.Errorf("x509 encoding private key: %w", err)
+		}
 	}
 
 	password := []byte{}
@@ -215,8 +237,8 @@ func marshalKeyPair(ptype string, keypair Keys, pf PassFunc) (key *KeysBytes, er
 		return nil, err
 	}
 
-	// default to SIGSTORE, but keep support of COSIGN
-	if ptype != CosignPrivateKeyPemType {
+	// default to SIGSTORE, but keep support of COSIGN and SM2
+	if ptype != CosignPrivateKeyPemType && ptype != SM2PrivateKeyPemType {
 		ptype = SigstorePrivateKeyPemType
 	}
 
@@ -276,27 +298,75 @@ func PemToECDSAKey(pemBytes []byte) (*ecdsa.PublicKey, error) {
 }
 
 // LoadPrivateKey loads a cosign PEM private key encrypted with the given passphrase,
-// and returns a SignerVerifier instance. The private key must be in the PKCS #8 format.
+// and returns a SignerVerifier instance. The private key can be in PKCS #8 format or SM2 format.
 func LoadPrivateKey(key []byte, pass []byte, defaultLoadOptions *[]signature.LoadOption) (signature.SignerVerifier, error) {
 	// Decrypt first
 	p, _ := pem.Decode(key)
 	if p == nil {
 		return nil, errors.New("invalid pem block")
 	}
-	if p.Type != CosignPrivateKeyPemType && p.Type != SigstorePrivateKeyPemType {
+	if p.Type != CosignPrivateKeyPemType && p.Type != SigstorePrivateKeyPemType && p.Type != SM2PrivateKeyPemType {
 		return nil, fmt.Errorf("unsupported pem type: %s", p.Type)
+	}
+
+	// Handle SM2 keys specially
+	if p.Type == SM2PrivateKeyPemType {
+		sm2Key, err := gmx509.ParsePKCS8PrivateKey(p.Bytes, nil)
+		if err != nil {
+			return nil, fmt.Errorf("parsing SM2 private key: %w", err)
+		}
+		return &SM2SignerVerifier{
+			priv: sm2Key,
+			pub:  &sm2Key.PublicKey,
+		}, nil
 	}
 
 	x509Encoded, err := encrypted.Decrypt(p.Bytes, pass)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: %w", err)
 	}
+
+	// For other key types, use PKCS8 parsing
 	pk, err := x509.ParsePKCS8PrivateKey(x509Encoded)
 	if err != nil {
 		return nil, fmt.Errorf("parsing private key: %w", err)
 	}
+
+	// Check if it's an SM2 private key (in case it was stored as PKCS8)
+	if sm2Key, ok := pk.(*sm2.PrivateKey); ok {
+		// Return SM2SignerVerifier for SM2 keys
+		return &SM2SignerVerifier{
+			priv: sm2Key,
+			pub:  &sm2Key.PublicKey,
+		}, nil
+	}
+
 	defaultLoadOptions = GetDefaultLoadOptions(defaultLoadOptions)
 	return signature.LoadDefaultSignerVerifier(pk, *defaultLoadOptions...)
+}
+
+// LoadVerifier loads a signature.Verifier from a public key.
+// This function extends signature.LoadVerifier to support SM2 keys.
+func LoadVerifier(publicKey crypto.PublicKey, hashFunc crypto.Hash) (signature.Verifier, error) {
+	// Handle SM2 keys specially since signature.LoadVerifier doesn't support them
+	if sm2Pub, ok := publicKey.(*sm2.PublicKey); ok {
+		return NewSM2Verifier(sm2Pub)
+	}
+
+	// For other key types, use the standard loader
+	return signature.LoadVerifier(publicKey, hashFunc)
+}
+
+// LoadVerifierWithOpts loads a signature.Verifier from a public key with options.
+// This function extends signature.LoadVerifierWithOpts to support SM2 keys.
+func LoadVerifierWithOpts(publicKey crypto.PublicKey, opts ...signature.LoadOption) (signature.Verifier, error) {
+	// Handle SM2 keys specially since signature.LoadVerifierWithOpts doesn't support them
+	if sm2Pub, ok := publicKey.(*sm2.PublicKey); ok {
+		return NewSM2Verifier(sm2Pub)
+	}
+
+	// For other key types, use the standard loader
+	return signature.LoadVerifierWithOpts(publicKey, opts...)
 }
 
 func GetDefaultLoadOptions(defaultLoadOptions *[]signature.LoadOption) *[]signature.LoadOption {

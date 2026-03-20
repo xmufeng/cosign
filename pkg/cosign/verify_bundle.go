@@ -17,8 +17,12 @@ package cosign
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"unsafe"
 
 	"github.com/sigstore/sigstore-go/pkg/verify"
+	"github.com/tjfoc/gmsm/sm2"
 )
 
 // VerifyNewBundle verifies a Sigstore bundle with the given parameters
@@ -30,11 +34,39 @@ func VerifyNewBundle(_ context.Context, co *CheckOpts, artifactPolicyOption veri
 	if err != nil {
 		return nil, err
 	}
+
+	pubKey, err := co.SigVerifier.PublicKey()
+	if err != nil {
+		return nil, err
+	}
+
+	if _, ok := pubKey.(*sm2.PublicKey); ok {
+		// 如是SM2公钥，关闭透明日志校验
+		verifierOptions = append(verifierOptions, withIgnoreTlog())
+	}
+
 	verifier, err := verify.NewVerifier(trustedMaterial, verifierOptions...)
 	if err != nil {
 		return nil, err
 	}
 	return verifier.Verify(bundle, verify.NewPolicy(artifactPolicyOption, policyOptions...))
+}
+
+func withIgnoreTlog() verify.VerifierOption {
+	return func(vc *verify.VerifierConfig) error {
+		// 使用反射设置私有字段 requireTlogEntries
+		v := reflect.ValueOf(vc).Elem()
+		field := v.FieldByName("requireTlogEntries")
+		if !field.IsValid() {
+			return fmt.Errorf("field requireTlogEntries not found")
+		}
+		if !field.CanSet() {
+			// 如果字段不可直接设置，使用非导出字段的设置方式
+			field = reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+		}
+		field.SetBool(false)
+		return nil
+	}
 }
 
 // rekorV2Bundle checks if a bundle contains only Rekor v2 entries, and if so, mandates that

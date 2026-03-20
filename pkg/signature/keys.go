@@ -17,8 +17,10 @@ package signature
 import (
 	"context"
 	"crypto"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/sigstore/cosign/v3/pkg/blob"
@@ -31,6 +33,13 @@ import (
 	"github.com/sigstore/sigstore/pkg/signature"
 
 	"github.com/sigstore/sigstore/pkg/signature/kms"
+	gmx509 "github.com/tjfoc/gmsm/x509"
+)
+
+var (
+	// UseKeyPassphrase is a boolean environment variable that controls whether to use a passphrase for the key.
+	// Defaults to true.
+	UseKeyPassphrase = strings.ToLower(os.Getenv("NO_KEY_PASSPHRASE")) != "true"
 )
 
 // LoadPublicKey is a wrapper for VerifierForKeyRef, hardcoding SHA256 as the hash algorithm
@@ -63,13 +72,34 @@ func VerifierForKeyRef(ctx context.Context, keyRef string, hashAlgorithm crypto.
 		return nil, err
 	}
 
-	// PEM encoded file.
-	pubKey, err := cryptoutils.UnmarshalPEMToPublicKey(raw)
+	// Check if it's an SM2 public key.
+	isSM2, pubKey := SM2PemPublicKey(raw)
+
+	if !isSM2 {
+		// PEM encoded file.
+		pubKey, err = cryptoutils.UnmarshalPEMToPublicKey(raw)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("pem to public key: %w", err)
 	}
 
-	return signature.LoadVerifier(pubKey, hashAlgorithm)
+	return cosign.LoadVerifier(pubKey, hashAlgorithm)
+}
+
+func SM2PemPublicKey(bts []byte) (bool, crypto.PublicKey) {
+	block, _ := pem.Decode(bts)
+
+	if block == nil {
+		return false, nil
+	}
+
+	if block.Type != cosign.SM2PublicKeyPemType {
+		return false, nil
+	}
+
+	pubKey, err := gmx509.ParseSm2PublicKey(block.Bytes)
+	return err == nil, pubKey
 }
 
 func loadKey(keyPath string, pf cosign.PassFunc, defaultLoadOptions *[]signature.LoadOption) (signature.SignerVerifier, error) {
@@ -78,7 +108,8 @@ func loadKey(keyPath string, pf cosign.PassFunc, defaultLoadOptions *[]signature
 		return nil, err
 	}
 	pass := []byte{}
-	if pf != nil {
+	//在环境变量中配置了KEY_PASSPHRASE=true时，才需要输入密码
+	if UseKeyPassphrase && pf != nil {
 		pass, err = pf(false)
 		if err != nil {
 			return nil, err
@@ -93,7 +124,7 @@ func LoadPublicKeyRaw(raw []byte, hashAlgorithm crypto.Hash) (signature.Verifier
 	if err != nil {
 		return nil, err
 	}
-	return signature.LoadVerifier(pub, hashAlgorithm)
+	return cosign.LoadVerifier(pub, hashAlgorithm)
 }
 
 func SignerFromKeyRef(ctx context.Context, keyRef string, pf cosign.PassFunc) (signature.Signer, error) {

@@ -342,7 +342,7 @@ func ValidateAndUnpackCert(cert *x509.Certificate, co *CheckOpts) (signature.Ver
 // Optionally verifies the subject and issuer of the certificate. Returns the chain built from the
 // certificate pools. Clients must verify the validity of this chain against a provided timestamp.
 func ValidateAndUnpackCertWithIntermediates(cert *x509.Certificate, co *CheckOpts, intermediateCerts *x509.CertPool) (signature.Verifier, []*x509.Certificate, error) {
-	verifier, err := signature.LoadVerifier(cert.PublicKey, crypto.SHA256)
+	verifier, err := LoadVerifier(cert.PublicKey, crypto.SHA256)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid certificate found on signature: %w", err)
 	}
@@ -1878,6 +1878,7 @@ func verifyImageAttestationsSigstoreBundle(ctx context.Context, signedImgRef nam
 		go func(bundle *sgbundle.Bundle, index int) {
 			var att oci.Signature
 			if err := func(bundle *sgbundle.Bundle) error {
+				// 校验bundle（签名）是否符合要求
 				_, err := VerifyNewBundle(ctx, co, artifactPolicyOption, bundle)
 				if err != nil {
 					return err
