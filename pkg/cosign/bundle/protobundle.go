@@ -75,21 +75,25 @@ func MakeProtobufBundle(hint string, rawCert []byte, rekorEntry *models.LogEntry
 	return bundle, nil
 }
 
-func MakeNewBundle(pubKey crypto.PublicKey, rekorEntry *models.LogEntryAnon, payload, sig, signer, timestampBytes []byte) ([]byte, error) {
+func MakeNewBundle(pubKey crypto.PublicKey, sm2hint string, rekorEntry *models.LogEntryAnon, payload, sig, signer, timestampBytes []byte) ([]byte, error) {
 	// Determine if the signer is a certificate or not
 	var hint string
 	var rawCert []byte
 
-	cert, err := cryptoutils.UnmarshalCertificatesFromPEM(signer)
-	if err != nil || len(cert) == 0 {
-		pkixPubKey, err := x509.MarshalPKIXPublicKey(pubKey)
-		if err != nil {
-			return nil, err
-		}
-		hashedBytes := sha256.Sum256(pkixPubKey)
-		hint = base64.StdEncoding.EncodeToString(hashedBytes[:])
+	if len(sm2hint) > 0 {
+		hint = sm2hint
 	} else {
-		rawCert = cert[0].Raw
+		cert, err := cryptoutils.UnmarshalCertificatesFromPEM(signer)
+		if err != nil || len(cert) == 0 {
+			pkixPubKey, err := x509.MarshalPKIXPublicKey(pubKey)
+			if err != nil {
+				return nil, err
+			}
+			hashedBytes := sha256.Sum256(pkixPubKey)
+			hint = base64.StdEncoding.EncodeToString(hashedBytes[:])
+		} else {
+			rawCert = cert[0].Raw
+		}
 	}
 
 	bundle, err := MakeProtobufBundle(hint, rawCert, rekorEntry, timestampBytes)

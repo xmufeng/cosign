@@ -33,6 +33,7 @@ import (
 	"github.com/sigstore/sigstore/pkg/signature"
 
 	"github.com/sigstore/sigstore/pkg/signature/kms"
+	"github.com/tjfoc/gmsm/sm2"
 	gmx509 "github.com/tjfoc/gmsm/x509"
 )
 
@@ -261,6 +262,13 @@ func PublicKeyPem(key signature.PublicKeyProvider, pkOpts ...signature.PublicKey
 	pub, err := key.PublicKey(pkOpts...)
 	if err != nil {
 		return nil, err
+	}
+	if sm2PubKey, ok := pub.(*sm2.PublicKey); ok {
+		pubKeyBytes, err := gmx509.MarshalSm2PublicKey(sm2PubKey)
+		if err != nil {
+			return nil, err
+		}
+		return pubKeyBytes, nil
 	}
 	return cryptoutils.MarshalPublicKeyToPEM(pub)
 }

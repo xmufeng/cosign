@@ -172,7 +172,7 @@ func (c *AttestBlobCommand) Exec(ctx context.Context, artifactPath string) error
 				return err
 			}
 
-			contents, err = cbundle.MakeNewBundle(pubKey, bundleComponents.RekorEntry, payload, bundleComponents.SignedPayload, bundleComponents.SignerBytes, bundleComponents.TimestampBytes)
+			contents, err = cbundle.MakeNewBundle(pubKey, "", bundleComponents.RekorEntry, payload, bundleComponents.SignedPayload, bundleComponents.SignerBytes, bundleComponents.TimestampBytes)
 			if err != nil {
 				return err
 			}

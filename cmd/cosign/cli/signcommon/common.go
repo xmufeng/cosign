@@ -56,6 +56,8 @@ import (
 	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/sigstore/sigstore/pkg/signature/dsse"
 	signatureoptions "github.com/sigstore/sigstore/pkg/signature/options"
+	"github.com/tjfoc/gmsm/sm2"
+	gmx509 "github.com/tjfoc/gmsm/x509"
 )
 
 // SignerVerifier contains keys or certs to sign and verify.
@@ -77,6 +79,18 @@ func (c *SignerVerifier) Close() {
 func (c *SignerVerifier) Bytes(ctx context.Context) ([]byte, error) {
 	if c.Cert != nil {
 		return c.Cert, nil
+	}
+	// 添加修改
+	pub, err := c.PublicKey(signatureoptions.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	if sm2PubKey, ok := pub.(*sm2.PublicKey); ok {
+		pubKeyBytes, err := gmx509.MarshalSm2PublicKey(sm2PubKey)
+		if err != nil {
+			return nil, err
+		}
+		return pubKeyBytes, nil
 	}
 
 	pemBytes, err := sigs.PublicKeyPem(c, signatureoptions.WithContext(ctx))
@@ -494,7 +508,17 @@ func WriteBundle(ctx context.Context, sv *SignerVerifier, rekorEntry *models.Log
 	if err != nil {
 		return err
 	}
-	bundleBytes, err := cbundle.MakeNewBundle(pubKey, rekorEntry, bundleOpts.Payload, signedPayload, signerBytes, timestampBytes)
+
+	sm2hint := ""
+	if _, ok := pubKey.(*sm2.PublicKey); ok {
+		keypair, err := key.NewSM2SignerVerifierKeypair(pubKey, sv, nil)
+		if err != nil {
+			return err
+		}
+		sm2hint = string(keypair.GetHint())
+	}
+
+	bundleBytes, err := cbundle.MakeNewBundle(pubKey, sm2hint, rekorEntry, bundleOpts.Payload, signedPayload, signerBytes, timestampBytes)
 	if err != nil {
 		return err
 	}
